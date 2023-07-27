@@ -3,7 +3,7 @@ import sys
 sys.path.append("../toolbox")
 
 import config_thread
-import encryption
+
 import string_tools
 
 import requests, json, random
@@ -11,26 +11,36 @@ import requests, json, random
 # import portalocker
 import time
 from datetime import datetime
-from getpass import getpass
 
 HUGE_NUMBER = (
     115792089237316195423570985008687907853269984665640564039457584007913129639935
 )
-ENCRYPTION_CODE = getpass("please input encryption code: ")
 
 
-def get_pkey(wallet_address, code=ENCRYPTION_CODE):
-    config = encryption.read_config_file(
-        encryption.config_file_path, wallet_address, code
+# 获取谷歌表格配置信息
+def get_config(sheetname, worksheet, key):
+    sheet_name = sheetname
+    worksheet_name = worksheet
+    creds = "../gCloud/pet-cats-09f0e10784ea.json"
+
+    thread = config_thread.ConfigThread(
+        creds, "read", sheet_name, worksheet_name, key=key
     )
-    if config is not None:
-        encrypted_private_key = config["encrypted_private_key"]
-        private_key = encryption.decrypt_private_key(
-            encrypted_private_key, encryption.encryption_key, config["iv"]
-        )
-        return private_key
-    else:
-        return None
+    time.sleep(1)
+    thread.start()
+    thread.join()
+    time.sleep(1)
+    config_result = thread.result
+    if config_result:
+        return config_result.get(key)
+
+
+def get_api_key(app, username):
+    return get_config("api-key", username, app)
+
+
+# print(get_api_key("okx", "mauricelsy@gmail.com"))
+# 返回字符串需要处理判断是否json序列化
 
 
 # 获取谷歌表格abi记录
@@ -43,8 +53,10 @@ def get_abi_gs(address, chain):
     thread = config_thread.ConfigThread(
         creds, "read", sheet_name, worksheet_name, key=chain
     )
+    time.sleep(1)
     thread.start()
     thread.join()
+    time.sleep(1)
     config_result = thread.result
     if config_result.get(chain):  # 如果有匹配项
         chain = config_result.get(chain)
@@ -55,9 +67,10 @@ def get_abi_gs(address, chain):
     thread = config_thread.ConfigThread(
         creds, "readln", sheet_name, worksheet_name, key=address
     )
+    time.sleep(1)
     thread.start()
     thread.join()
-    time.sleep(2)
+    time.sleep(1)
     config_result = thread.result
     match_result = [
         record
@@ -87,8 +100,10 @@ def tx_journal_gs(tx_journal):
     thread = config_thread.ConfigThread(
         creds, "write-rows", sheet_name, worksheet_name, value=tx_journal_list
     )
+    time.sleep(1)
     thread.start()
     thread.join()
+    time.sleep(1)
     return True
 
 
@@ -98,8 +113,10 @@ def get_group_accounts(group_no):
     worksheet_name = f"Group{group_no}"
 
     thread = config_thread.ConfigThread(creds, "read", sheet_name, worksheet_name)
+    time.sleep(1)
     thread.start()
     thread.join()
+    time.sleep(1)
     return thread.result
 
 
@@ -109,8 +126,10 @@ def get_assignment(group_no, status="active"):
     worksheet_name = "assignment"
 
     thread = config_thread.ConfigThread(creds, "readln", sheet_name, worksheet_name)
+    time.sleep(1)
     thread.start()
     thread.join()
+    time.sleep(1)
     if thread.result:
         return {
             d["hashID"]: {
@@ -118,6 +137,7 @@ def get_assignment(group_no, status="active"):
                 "name": d["missionName"],
                 "params": json.loads(d["Params"]),  # 添加判断处理非json标准格式输入
                 "status": d["Status"],
+                "deadline": d["Deadline"],
             }
             for d in thread.result
             if d["hashID"]
@@ -136,16 +156,22 @@ def update_assignment(id, account_list):
     worksheet_name = "assignment"
 
     status_list = []
-    status_completed = True
-    status_processing = False
+    group_status_completed = True
+    group_status_processing = False
+    group_status_paused = False
+    group_status_expired = False
     for account, assignments in account_list.items():
         assignment = assignments.get(id)
         if assignment:
             status = assignment["status"]
-            if status == "processing":
-                status_processing = True
             if status != "completed":
-                status_completed = False
+                group_status_completed = False
+            if status == "processing":
+                group_status_processing = True
+            if status == "paused":
+                group_status_paused = True
+            if status == "expired":
+                group_status_expired = True
         else:
             status = ""
         status_list.append(f"{status} - {account}")
@@ -158,31 +184,38 @@ def update_assignment(id, account_list):
         worksheet_name,
         key=id,
         value=status_list,
-        col_start=9,
+        col_start=10,
     )
+    time.sleep(1)
     thread.start()
     thread.join()
-    time.sleep(2)
+    time.sleep(1)
     # 更新当前任务状态
-    if status_completed:
-        status_new = "completed"
-    elif status_processing:
-        status_new = "processing"
+    if group_status_completed:
+        group_status_new = "completed"
     else:
-        status_new = ""
-    if status_new:
+        group_status_new = ""
+        if group_status_processing:
+            group_status_new = "processing"
+        if group_status_paused:
+            group_status_new = "paused"
+        if group_status_expired:
+            group_status_new = "expired"
+
+    if group_status_new:
         thread = config_thread.ConfigThread(
             creds,
             "write-column",
             sheet_name,
             worksheet_name,
             key=id,
-            value=[status_new],
-            col_start=6,
+            value=[group_status_new],
+            col_start=7,
         )
+        time.sleep(1)
         thread.start()
         thread.join()
-        time.sleep(2)
+        time.sleep(1)
 
 
 def get_job(mission_id):
@@ -193,8 +226,10 @@ def get_job(mission_id):
     thread = config_thread.ConfigThread(
         creds, "readln", sheet_name, worksheet_name, mission_id
     )
+    time.sleep(1)
     thread.start()
     thread.join()
+    time.sleep(1)
     if thread.result:
         job_list = {
             d["jobID"]: {
@@ -224,9 +259,10 @@ def get_task(task_id=None):
     thread = config_thread.ConfigThread(
         creds, "readln", sheet_name, worksheet_name, task_id
     )
+    time.sleep(1)
     thread.start()
     thread.join()
-    time.sleep(2)
+    time.sleep(1)
     if thread.result:
         if task_id:
             return {

@@ -47,9 +47,12 @@ try:
         #         "job": {},
         #     },
         # }
-        assignment_list = get_assignment(group_no, ("active", "processing"))
-        print(f"get {len(assignment_list)} active assignments for group {group_no}...")
-        time.sleep(2)
+
+        # 读取任务状态参数
+        assignment_list = get_assignment(
+            group_no, ("active", "processing", "paused", "expired")
+        )
+        print(f"get {len(assignment_list)} assignments for group {group_no}...")
 
         # 读取Task列表（task函数执行参数）
         task_list = get_task()
@@ -60,7 +63,6 @@ try:
             print(
                 f'get {len(job_list)} jobs for mission {assignment_info["mission"]}...'
             )
-            time.sleep(2)
             assignment_info.update({"job": copy.deepcopy(job_list)})
 
         # 初始化任务执行状态表
@@ -69,15 +71,16 @@ try:
             # 如果不存在该任务，直接更新
             account_list[account_id] = copy.deepcopy(assignment_list)
 
-            # 读取任务列表
+            # 初始化任务状态
             for assignment_id in assignment_list:
-                account_list[account_id][assignment_id].update({"status": "processing"})
+                account_assignment = account_list[account_id][assignment_id]
+                # 变更新加任务状态（已读取）
+                if account_assignment["status"] == "active":
+                    account_assignment.update({"status": "processing"})
                 mission_status_check = 1
-                # 初始化job状态
-                for job_id, job_info in account_list[account_id][assignment_id][
-                    "job"
-                ].items():
-                    # 检查当前账号当前任务是否存在job状态
+                # 初始化job状态(0,1,-1)
+                for job_id, job_info in account_assignment["job"].items():
+                    # 检查当前账号当前任务是否存在job状态（例外判断考虑可能修改设置出现新job）
                     try:
                         job_status_update = account_status_local[account_id][
                             assignment_id
@@ -86,11 +89,18 @@ try:
                         job_status_update = 0
                     job_info.update({"status": job_status_update})
                     mission_status_check *= job_status_update
-                # 任务完成检查参数与逐个job状态相乘不为零重新设置任务完成状态
-                if mission_status_check:
-                    account_list[account_id][assignment_id].update(
-                        {"status": "completed"}
-                    )
+                # 任务完成检查参数与逐个job状态相乘大于零（没有0和-1状态）设置当前任务完成状态
+                if mission_status_check > 0:
+                    account_assignment.update({"status": "completed"})
+                else:
+                    # 未完成检查超时
+                    if (
+                        account_assignment["deadline"]
+                        and time.time() > account_assignment["deadline"]
+                    ):
+                        account_assignment.update({"status": "expired"})
+
+        # 修改谷歌日志记录 - 添加JobID
 
         # 更新任务状态文件
         with open(status_file, "w") as f:
@@ -130,6 +140,17 @@ try:
                             "active",
                             "processing",
                         ):
+                            # 判断超时状态
+                            if (
+                                account_mission["deadline"]
+                                and time.time() > account_mission["deadline"]
+                            ):
+                                account_mission.update({"status": "expired"})
+                                print(
+                                    f"{string_tools.mask_address(account_address)} - {mission_name} - 当前任务已超时，暂停执行..."
+                                )
+                                continue
+
                             # 获取job执行顺序
                             job_list_ordered = get_job_ordered(mission_jobs)
                             # 进入任务执行循环
@@ -155,11 +176,16 @@ try:
                                     # 合并task参数
                                     if task_list.get(task_name):
                                         task_params.update(task_list[task_name])
+                                    # 屏幕提示交易参数（来自配置信息）
                                     print(
-                                        f"{account_address} - {mission_name} - {task_name} - {task_params}"
+                                        f"{string_tools.mask_address(account_address)} - {mission_name} - {task_name} - {task_params}"
                                     )
                                     # 设定执行gas
-                                    gas_price_threshold = task_params.get("gas")
+                                    gas_price_threshold = (
+                                        task_params["gas"]
+                                        if task_params.get("gas")
+                                        else 10
+                                    )
                                     if gas_price_threshold:
                                         gas_price_threshold = Web3.to_wei(
                                             gas_price_threshold, "gwei"
@@ -175,7 +201,7 @@ try:
                                         and sleep_loop < 5
                                     ):
                                         print(
-                                            f"{account_address} - {mission_name} - {task_name}"
+                                            f"{string_tools.mask_address(account_address)} - {mission_name} - {task_name}"
                                         )
                                         print("超过阈值，等待中...")
                                         time.sleep(5)  # 每5秒检查一次 gas price
@@ -233,11 +259,13 @@ try:
                             # 当前账号完成一次任务执行循环后检查mission状态
                             mission_status_check = True
                             for job_info in account_mission["job"].values():
-                                if job_info["status"] == 0:
+                                if job_info["status"] != 1:
                                     mission_status_check = False
                                     break
                             if mission_status_check:
-                                print(f"{account_address} - {mission_name} completed!")
+                                print(
+                                    f"{string_tools.mask_address(account_address)} - {mission_name} completed!"
+                                )
                                 account_mission["status"] = "completed"
                                 # 更新任务状态文件
                                 with open(status_file, "w") as f:

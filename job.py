@@ -1,11 +1,58 @@
 from petcat_tools import *
+from encryption import get_pkey
 from task import *
+
 from rabbithole_tools import *
+from mintfun_tools import *
 
 from eth_account.messages import defunct_hash_message
 
 
 class jobClass:
+    # mint.fun x zora bridge pass 获取merkle proof
+    def mint_fun_zora_pass(self, params):
+        wallet_address = params.get("wallet_address")
+        merkle_root = params.get("merkle_root")
+
+        # Function: depositTransaction(address _to, uint256 _value, uint64 _gasLimit, bool _isCreation, bytes _data)
+        session = requests.Session()
+        address_list = mintfun_zora_pass_getTree(merkle_root, session).get(
+            "unhashedLeaves"
+        )
+        if wallet_address.lower() in address_list:
+            proof = mintfun_zora_pass_getProof(
+                merkle_root, wallet_address, session
+            ).get("proof")
+            if proof:
+                proof_bytes = [bytes.fromhex(item[2:]) for item in proof]
+                proof_bytes_tuple = (tuple(proof_bytes),)
+                function_name = "mint(bytes32[])"
+                _data_hexstring = make_calldata(
+                    function_name, ["bytes32[]"], proof_bytes_tuple
+                )
+                _data = bytes.fromhex(_data_hexstring[2:])
+                _isCreation = False
+                _gasLimit = 222000
+                _value = 0
+                _to = "0x007777777e83977A6808F19782028b1677117690"
+                # function_name = "depositTransaction(address,uint256,uint64,bool,bytes)"
+                # params_type = ["address", "uint256", "uint64", "bool", "bytes"]
+                # args = [_to, _value, _gasLimit, _isCreation, _data]
+                # data = make_calldata(function_name, params_type, args)
+
+                # print(args)
+                # input(f"data - {data} press any key to continue...")
+
+                # return {"args": args, "data": data}
+                return {
+                    "_to": _to,
+                    "_value": _value,
+                    "_gasLimit": _gasLimit,
+                    "_isCreation": _isCreation,
+                    "_data": _data,
+                }
+        return {}
+
     # RabbitHole Claim Rewards 前端获取交易参数
     def rh_claim_rewards(self, params):
         session = requests.Session()

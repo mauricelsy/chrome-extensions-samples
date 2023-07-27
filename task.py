@@ -1,4 +1,5 @@
 from petcat_tools import *
+from encryption import get_pkey
 from web3 import Web3
 from eth_abi import encode
 from web3.middleware import geth_poa_middleware
@@ -72,6 +73,49 @@ def get_base_fee(chain):
     return base_fee
 
 
+# 估算合约gas消耗
+# 请注意源地址中eth余额过低，执行estimate_gas方法也可能会失败并引发异常
+# ValueError: {'code': -32000, 'message': 'gas required exceeds allowance (22072)'}
+def get_estimate_gas(chain, wallet_address, contract_address, data, value_wei=0):
+    web3 = get_web3(chain)
+    contract_address = web3.to_checksum_address(contract_address)
+    chain_id = web3.eth.chain_id
+    nonce = web3.eth.get_transaction_count(wallet_address)
+    gas_price = web3.eth.gas_price
+    base_fee = get_base_fee(chain)
+    print(
+        "chain id:",
+        chain_id,
+        "nonce:",
+        nonce,
+        "gas price:",
+        gas_price,
+        "base fee:",
+        base_fee,
+    )
+    if data:
+        transaction_params = {
+            "from": wallet_address,
+            "to": contract_address,
+            "value": value_wei,
+            # "gasPrice": gas_price,
+            "nonce": nonce,
+            "chainId": chain_id,
+            "maxFeePerGas": int(base_fee * 1.33),
+            "maxPriorityFeePerGas": 100000000,  # 0.1gwei
+        }
+        transaction = {**transaction_params, "data": data}
+        gas_limit = web3.eth.estimate_gas(transaction)
+        print(f"get gas estimate: {gas_limit}")
+
+
+# chain = input("please input chain: ")
+# wallet_address = input("please input wallet address: ")
+# contract_address = input("please input contract address: ")
+# data = input("please input hex data: ")
+# get_estimate_gas(chain, wallet_address, contract_address, data)
+
+
 # 合约读函数
 def function_read(chain, contract_address, function_name, args):
     web3 = get_web3(chain)
@@ -99,16 +143,25 @@ def function_write(
     status = 0
     tx_hash = ""
     message = ""
+    tx_fee = None
+    value = None
 
     web3 = get_web3(chain)
     contract_address = web3.to_checksum_address(contract_address)
 
     contract_abi = get_abi_gs(contract_address, chain)
     if not contract_abi:
-        print("no abi got for contract", contract_address)
-        return
-    contract_instance = web3.eth.contract(address=contract_address, abi=contract_abi)
+        message = f"no abi got for contract - {contract_address}"
+        print(message)
+        return {
+            "status": status,
+            "tx_hash": tx_hash,
+            "tx_fee": tx_fee,
+            "value": value,
+            "message": message,
+        }
 
+    contract_instance = web3.eth.contract(address=contract_address, abi=contract_abi)
     private_key = get_pkey(wallet_address)
 
     # print(wallet_address, nonce)
@@ -134,19 +187,37 @@ def function_write(
         "base fee:",
         base_fee,
     )
-    print(f"wallet_address: {wallet_address}  contract address: {contract_address}")
+    # print(f"wallet_address: {wallet_address}  contract address: {contract_address}")
 
     # 构建交易对象（无abi直接data方式/通过abi及参数构建）
     if data:
-        transaction_params = {
-            "from": wallet_address,
-            "to": contract_address,
-            "value": value_wei,
-            "gasPrice": gas_price,
-            "nonce": nonce,
-            "chainId": chain_id,
-            # "maxFeePerGas": base_fee * 2,
-        }
+        if chain in (
+            "eth",
+            "op",
+            "arb",
+        ):  # 支持EIP-1559
+            transaction_params = {
+                "from": wallet_address,
+                "to": contract_address,
+                "value": value_wei,
+                # "gasPrice": gas_price,
+                "nonce": nonce,
+                "chainId": chain_id,
+                "maxFeePerGas": int(base_fee * 1.33),
+                "maxPriorityFeePerGas": 100000000,  # 0.1gwei
+                # gasPrice 和 (maxFeePerGas or maxPriorityFeePerGas) 不可同时指定
+                # evm交易legacy模式和EIP-1559模式
+            }
+        else:
+            transaction_params = {
+                "from": wallet_address,
+                "to": contract_address,
+                "value": value_wei,
+                "gasPrice": gas_price,
+                "nonce": nonce,
+                "chainId": chain_id,
+                # "maxFeePerGas": base_fee * 2,
+            }
         transaction = {**transaction_params, "data": data}
     else:
         transaction_params = {
@@ -174,11 +245,22 @@ def function_write(
         transaction.update({"gas": gas_limit})
     else:
         # 获取网络当前gas估算值
-        gas_limit = web3.eth.estimate_gas(transaction)
-        print(f"get gas estimate: {gas_limit}")
+        try:
+            gas_limit = web3.eth.estimate_gas(transaction)
+            print(f"get gas estimate: {gas_limit}")
+        except:
+            message = "get gas limit failed!"
+            return {
+                "status": status,
+                "tx_hash": tx_hash,
+                "tx_fee": tx_fee,
+                "value": value,
+                "message": message,
+            }
 
     # gas limit加入交易参数
-    transaction.update({"gas": gas_limit})
+    # 务必设定比当前估算gas值更高的limit，特别是eth主网交易极容易失败
+    transaction.update({"gas": int(gas_limit * 1.1)})
     # input(f"{transaction}\nPress any key to continue...")
 
     # 签名交易
@@ -188,16 +270,8 @@ def function_write(
     # 等待交易确认
     transaction_receipt = web3.eth.wait_for_transaction_receipt(transaction_hash)
 
-    # 检查交易结果
-    # now = datetime.now()
-    # if transaction_receipt["status"] == 1:
-    #     print(wallet_address, "交易成功", transaction_hash.hex())
-    #     tx_info = [taskname, "Sucess", wallet_address, "", 0, transaction_hash.hex()]
-    #     tx_journal(str(now), tx_info)
-    # else:
-    #     print(wallet_address, "交易失败", transaction_hash.hex())
-    #     tx_info = [taskname, "Fail", wallet_address, "", 0, transaction_hash.hex()]
-    #     tx_journal(str(now), tx_info)
+    # 需要添加超时处理流程（gas设置过低或网络突然拥堵导致交易无法即时确认，引起web3超时错误（实际交易可能继续确认并完成）
+    # ********************************************************************************************************
 
     tx_info = get_tx_info(chain, transaction_receipt)
     tx_hash = transaction_hash.hex()
@@ -207,6 +281,10 @@ def function_write(
     tx_fee = tx_info["tx_fee"]
     value = round(value_wei / 1e18, 6)
     message = f"contract {contract_address}, function {function_name}, {gas_price_info}, {tx_fee_info}"
+
+    # 判定异常交易状况
+    if tx_hash and status == 0 and (value + tx_fee) > 0:
+        status = -1
 
     return {
         "status": status,
@@ -289,6 +367,8 @@ def transfer(chain, value_eth, sender, receiver, balance_limit=0, **kwargs):
     status = 0
     tx_hash = ""
     message = ""
+    tx_fee = None
+    value = None
 
     try:
         web3 = get_web3(chain)
@@ -316,7 +396,7 @@ def transfer(chain, value_eth, sender, receiver, balance_limit=0, **kwargs):
             transaction_flag = False
             message = "Low balance!"
 
-        # 确认gas limit
+        # 估算gas消耗
         gas_estimate = web3.eth.estimate_gas(
             {
                 "from": sender_address,
@@ -342,16 +422,34 @@ def transfer(chain, value_eth, sender, receiver, balance_limit=0, **kwargs):
             transaction_flag = False
             message = "User aborted!!"
 
+        base_fee = get_base_fee(chain)
+
         if transaction_flag:
             # 构造交易对象
-            transaction = {
-                "to": recipient_address,
-                "value": value_wei,
-                "gas": gas_estimate,
-                "gasPrice": web3.eth.gas_price,
-                "nonce": web3.eth.get_transaction_count(sender_address),
-                # "chainId": 42161,  # Arbitrum主网的chainId
-            }
+            if chain in (
+                "eth",
+                "op",
+                "arb",
+            ):  # 支持EIP-1559
+                transaction = {
+                    "to": recipient_address,
+                    "value": value_wei,
+                    "gas": gas_estimate,
+                    # "gasPrice": web3.eth.gas_price,
+                    "nonce": web3.eth.get_transaction_count(sender_address),
+                    "maxFeePerGas": int(base_fee * 1.33),
+                    "maxPriorityFeePerGas": 0,
+                    "chainId": web3.eth.chain_id,
+                }
+            else:
+                transaction = {
+                    "to": recipient_address,
+                    "value": value_wei,
+                    "gas": gas_estimate,
+                    "gasPrice": web3.eth.gas_price,
+                    "nonce": web3.eth.get_transaction_count(sender_address),
+                    "chainId": web3.eth.chain_id,
+                }
 
             # 签名交易
             signed_transaction = web3.eth.account.sign_transaction(
@@ -375,6 +473,9 @@ def transfer(chain, value_eth, sender, receiver, balance_limit=0, **kwargs):
             tx_fee = tx_info["tx_fee"]
             value = round(value_wei / 1e18, 6)
             message = f"transfer {round(value_wei/1e18,6)} ETH, {gas_price_info}, {tx_fee_info}"
+            # 判定异常交易状况
+            if tx_hash and status == 0 and (value + tx_fee) > 0:
+                status = -1
 
     except Exception as e:
         message = str(e)
@@ -393,7 +494,7 @@ def check_params(address, params):
         if params["api"] == "transfer":
             # transfer(chain, amount_eth, sender, receiver, balance_limit=0)
             # 逐个判断参数是否ready
-            if params.get("chain") and params.get("amount_eth"):
+            if params.get("chain") and params.get("value_eth"):
                 params.update({"sender": address})
                 if params.get("receiver"):
                     return params
@@ -451,6 +552,7 @@ def check_params(address, params):
                 if params.get("abi"):
                     return params
                 # 不使用abi方法直接生成交易data参数
+                # 注意eth_abi.encode方法在复杂嵌套数组参数处理有局限（务必测试！）
                 else:
                     if params.get("params_type"):
                         params_type = params["params_type"]
@@ -459,9 +561,14 @@ def check_params(address, params):
 
                     params_type_str = "(" + ",".join(params_type) + ")"
                     function_name = params["function_name"] + params_type_str
-                    data = make_calldata(function_name, params_type, args)
-                    params.update({"data": data})
-                    return params
+                    # 判断参数完整性（params_type与args数量匹配）
+                    try:
+                        data = make_calldata(function_name, params_type, args)
+                        params.update({"data": data})
+                        return params
+                    except:
+                        # data生成错误（可能参数匹配错误）
+                        print("make hex data error!")
 
     return {}
 
@@ -487,7 +594,7 @@ def task_do(address, params):
                     }
                 )
                 print(result_message)
-            return task_result
+
         elif params["api"] == "function_write":
             params = check_params(address, params)
             # print("get params checked -", params)
@@ -505,5 +612,9 @@ def task_do(address, params):
                     }
                 )
                 print(result_message)
+
+        elif params["api"] == "test":
+            status = input("please input test result(code: 0/1/-1): ")
+            task_result.update({"status": int(status)})
 
     return task_result
