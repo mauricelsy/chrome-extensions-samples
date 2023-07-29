@@ -489,22 +489,73 @@ def transfer(chain, value_eth, sender, receiver, balance_limit=0, **kwargs):
     }
 
 
+def transfer_cex(params, api_username="mauricelsy@gmail.com"):
+    # 返回参数初始化
+    status = 0
+    tx_hash = ""
+    message = ""
+    tx_fee = None
+    value = None
+    # 获取cex api key
+    if params.get("from_cex"):
+        cex = params["from_cex"]
+        chain = params["chain"]
+        token = params["token"]
+        amount = params["amount"]
+        fee = params["fee"]
+        to_addr = params["to_addr"]
+
+        if cex == "okx":
+            key_info = json.loads(get_api_key(cex, api_username))  # 注意配置信息是否符合json结构
+            chain_id_ok = okx_tools.get_chain_id_ok(token, chain)
+            if chain_id_ok:
+                return okx_tools.withdrawal_onchain(
+                    key_info, token, amount, fee, to_addr, chain_id_ok
+                )
+            else:
+                message = f"交易所提币网络参数获取失败{token}-{chain}"
+        else:
+            message = f"不支持的交易所{cex}"
+    else:
+        message = "params check error!"
+
+    return {
+        "status": status,
+        "tx_hash": tx_hash,
+        "tx_fee": tx_fee,
+        "value": value,
+        "message": message,
+    }
+
+
 def check_params(address, params):
     if params.get("api"):
         if params["api"] == "transfer":
+            # 链上地址转账
             # transfer(chain, amount_eth, sender, receiver, balance_limit=0)
-            # 逐个判断参数是否ready
             if params.get("chain") and params.get("value_eth"):
                 params.update({"sender": address})
+                # 用户指定接收地址
                 if params.get("receiver"):
                     return params
-                elif params.get("to_exchange"):
-                    receiver = get_cex_address(params["to_exchange"], address).get(
-                        address
-                    )
+                # 转账至cex归集地址
+                elif params.get("to_cex"):
+                    # 获取当前账户对应归集地址
+                    receiver = get_cex_address(params["to_cex"], address).get(address)
                     if receiver:
                         params.update({"receiver": receiver})
                         return params
+            # cex发起转账（提币交易）
+            # transfer_cex(params, api_username="mauricelsy@gmail.com")
+            elif params.get("from_cex"):
+                if (
+                    params.get("chain")
+                    and params.get("token")
+                    and params.get("amount")
+                    and params.get("fee")
+                ):
+                    params.update({"to_addr": address})
+                    return params
 
         elif params["api"] == "function_write":
             # function_write(chain, wallet_address, contract_address, function_name, args, data=None, gas_limit=None, value_wei=0,)
@@ -581,7 +632,11 @@ def task_do(address, params):
             # print("get params checked -", params)
             # task_result = int(input("please input task result 0/1..."))
             if params:
-                task_result = transfer(**params)
+                # 判断是否cex转账交易
+                if params.get("from_cex"):
+                    task_result = transfer_cex(params)
+                else:
+                    task_result = transfer(**params)
             else:
                 result_message = "params check error!"
                 task_result.update(

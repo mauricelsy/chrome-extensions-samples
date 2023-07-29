@@ -3,14 +3,14 @@ import sys
 sys.path.append("../toolbox")
 
 import config_thread
-
 import string_tools
+import okx_tools
 
 import requests, json, random
+from datetime import datetime
+import time
 
 # import portalocker
-import time
-from datetime import datetime
 
 HUGE_NUMBER = (
     115792089237316195423570985008687907853269984665640564039457584007913129639935
@@ -39,8 +39,8 @@ def get_api_key(app, username):
     return get_config("api-key", username, app)
 
 
-# print(get_api_key("okx", "mauricelsy@gmail.com"))
-# 返回字符串需要处理判断是否json序列化
+# print(json.loads(get_api_key("okx", "mauricelsy@gmail.com")))
+# # 返回字符串需要处理判断是否json序列化
 
 
 # 获取谷歌表格abi记录
